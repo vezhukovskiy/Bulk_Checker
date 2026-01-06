@@ -5,6 +5,7 @@ import os
 import time
 import random
 import re
+from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 
@@ -14,8 +15,9 @@ try:
 except ImportError:
     sync_playwright = None
 
-# Файл хранения
+# Файлы хранения
 LOCAL_PROXY_FILE = "saved_proxies.json"
+HISTORY_FILE = "scan_history.json"
 
 RESTRICT_PATTERNS = [
     r"not available in your country", r"unavailable in your jurisdiction",
@@ -26,23 +28,58 @@ RESTRICT_PATTERNS = [
 ]
 
 # ==========================================
-# 1. ЛОГИКА PROXY
+# 1. HISTORY MANAGER (NEW)
+# ==========================================
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, 'r') as f:
+                data = json.load(f)
+            return data
+        except: return []
+    return []
+
+def save_to_history(new_records):
+    """Save new records and clean up old ones (>7 days)"""
+    history = load_history()
+    
+    # 1. Add new
+    # Add timestamp string
+    now_str = datetime.now().isoformat()
+    for rec in new_records:
+        rec['timestamp'] = now_str
+        history.append(rec)
+    
+    # 2. Cleanup old (> 7 days)
+    cutoff = datetime.now() - timedelta(days=7)
+    clean_history = []
+    for rec in history:
+        try:
+            rec_dt = datetime.fromisoformat(rec['timestamp'])
+            if rec_dt > cutoff:
+                clean_history.append(rec)
+        except: pass # Если формат битый, удаляем
+            
+    with open(HISTORY_FILE, 'w') as f:
+        json.dump(clean_history, f, indent=4)
+
+# ==========================================
+# 2. PROXY LOGIC
 # ==========================================
 
 def load_proxies():
     proxies = {}
-    # 1. Secrets (Cloud)
+    # Secrets
     if "proxies" in st.secrets:
         for name, url in st.secrets["proxies"].items():
             p_type = "rotating" if "{geo}" in url else "static"
             proxies[name] = {
-                "url": url, 
-                "type": p_type,
+                "url": url, "type": p_type,
                 "geo": "Unknown" if p_type == "static" else "Multi",
                 "desc": "🔒 From Secrets"
             }
-
-    # 2. Local File
+    # Local
     if os.path.exists(LOCAL_PROXY_FILE):
         try:
             with open(LOCAL_PROXY_FILE, 'r') as f:
@@ -82,14 +119,13 @@ def format_proxy_label(name, data):
     else:
         return f"🔄 [Rotating] {name}"
 
-def get_final_url(data, target_geo):
-    tpl = data['url']
-    if data.get('type') == 'rotating' and "{geo}" in tpl:
-        return tpl.replace("{geo}", target_geo.lower()).replace("{GEO}", target_geo.upper())
-    return tpl
+def get_final_url(url_template, p_type, target_geo):
+    if p_type == 'rotating' and "{geo}" in url_template:
+        return url_template.replace("{geo}", target_geo.lower()).replace("{GEO}", target_geo.upper())
+    return url_template
 
 # ==========================================
-# 2. ДВИЖОК
+# 3. CORE ENGINE
 # ==========================================
 
 def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bool):
@@ -132,6 +168,8 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 
             try: page.mouse.move(random.randint(100,500), random.randint(100,500))
             except: pass
+            
+            # Wait for content or Cloudflare
             try: page.wait_for_selector("text=Just a moment", state="detached", timeout=6000)
             except: pass
             
@@ -151,15 +189,15 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
             if browser: browser.close()
 
 # ==========================================
-# 3. UI
+# 4. UI
 # ==========================================
 
-st.set_page_config(page_title="Geo Scanner v8", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Geo Scanner v9 Ultimate", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
 
-def refresh(): st.session_state.proxies = load_proxies()
+def refresh_proxies(): st.session_state.proxies = load_proxies()
 
 def color_status(val):
     if val == 'OK': return 'background-color: #d4edda; color: black'
@@ -173,19 +211,162 @@ with st.sidebar:
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
 
-st.title("🌍 Affiliate Geo Scanner v8")
+st.title("🌍 Affiliate Geo Scanner v9")
 
-tab_manual, tab_bulk, tab_manage = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager"])
+# TABS
+tab_manual, tab_bulk, tab_manage, tab_history = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager", "📜 History"])
 
-# === 1. PROXY MANAGER ===
+# === TAB 1: MANUAL CHECK ===
+with tab_manual:
+    c1, c2, c3 = st.columns([3, 1, 2])
+    dom = c1.text_input("Domain", "stake.com")
+    
+    # 1. Выбор источника прокси
+    proxies = st.session_state.proxies
+    p_keys = sorted(list(proxies.keys()))
+    
+    # Добавляем опцию "Custom"
+    select_options = [""] + p_keys + ["⚡ Custom (One-time)"]
+    
+    p_sel = c3.selectbox("Select Proxy", select_options, 
+                         format_func=lambda x: "⚡ Custom (One-time)" if x == "⚡ Custom (One-time)" else (format_proxy_label(x, proxies[x]) if x in proxies else ""))
+    
+    # Логика определения прокси (Saved или Custom)
+    active_proxy_data = None
+    
+    if p_sel == "⚡ Custom (One-time)":
+        with c3.expander("Configure Custom Proxy", expanded=True):
+            cust_type = st.radio("Type", ["rotating", "static"], horizontal=True, key="man_cust_type")
+            cust_url = st.text_input("URL", placeholder="http://...", key="man_cust_url")
+            cust_geo = ""
+            if cust_type == "static":
+                cust_geo = st.text_input("Fixed GEO", placeholder="US", max_chars=2, key="man_cust_geo").upper()
+            
+            if cust_url:
+                active_proxy_data = {"url": cust_url, "type": cust_type, "geo": cust_geo}
+    
+    elif p_sel and p_sel in proxies:
+        active_proxy_data = proxies[p_sel]
+
+    # 2. Поле ГЕО (Умное поведение)
+    geo_val = "US"
+    geo_disabled = False
+    
+    if active_proxy_data and active_proxy_data['type'] == 'static':
+        geo_val = active_proxy_data['geo']
+        geo_disabled = True # Блокируем, так как прокси статична
+        c2.info(f"🔒 Locked to {geo_val}")
+    
+    check_geo = c2.text_input("Check GEO", value=geo_val, disabled=geo_disabled, key="man_geo").upper()
+
+    # 3. Кнопка
+    if st.button("Check One", type="primary"):
+        if active_proxy_data:
+            final_url = get_final_url(active_proxy_data['url'], active_proxy_data['type'], check_geo)
+            
+            with st.status(f"Checking via {p_sel if p_sel != '⚡ Custom (One-time)' else 'Custom Proxy'}..."):
+                res, note, html = check_browser_stealth(dom, final_url, timeout, headless)
+                
+                # Результат
+                if res == "OK": st.success(f"{res}: {note}")
+                elif res == "RESTRICTED": st.error(f"{res}: {note}")
+                else: st.warning(f"{res}: {note}")
+                
+                # Сохраняем в историю
+                rec = {
+                    "Domain": dom, "GEO": check_geo, "Status": res, 
+                    "Note": note, "Proxy Used": p_sel
+                }
+                save_to_history([rec])
+                
+                with st.expander("Source"): st.code(html[:1000])
+        else:
+            st.error("Please configure a proxy.")
+
+# === TAB 2: BULK SCAN ===
+with tab_bulk:
+    # 1. Proxy Selection
+    b_opts = [""] + p_keys + ["⚡ Custom (One-time)"]
+    b_sel = st.selectbox("1. Select Proxy Strategy", b_opts, 
+                         format_func=lambda x: "⚡ Custom (One-time)" if x == "⚡ Custom (One-time)" else (format_proxy_label(x, proxies[x]) if x in proxies else "Select..."),
+                         key="bulk_p")
+
+    # Logic for Bulk Active Proxy
+    b_active_data = None
+    if b_sel == "⚡ Custom (One-time)":
+        with st.expander("Configure Custom Bulk Proxy", expanded=True):
+            b_cust_type = st.radio("Type", ["rotating", "static"], horizontal=True, key="blk_cust_type")
+            b_cust_url = st.text_input("URL Template", placeholder="http://...", key="blk_cust_url")
+            b_cust_geo = ""
+            if b_cust_type == "static":
+                b_cust_geo = st.text_input("Fixed GEO", placeholder="US", max_chars=2, key="blk_cust_geo").upper()
+            if b_cust_url:
+                b_active_data = {"url": b_cust_url, "type": b_cust_type, "geo": b_cust_geo}
+    elif b_sel and b_sel in proxies:
+        b_active_data = proxies[b_sel]
+
+    # 2. Geo Fields Logic
+    bg_disabled = False
+    bg_val = "US, DE, CA"
+    
+    if b_active_data and b_active_data['type'] == 'static':
+        bg_disabled = True
+        bg_val = b_active_data['geo']
+        st.info(f"🔒 Static Proxy selected. Scan restricted to single GEO: **{bg_val}**")
+    
+    b_geos = st.text_input("2. Target GEOs", value=bg_val, disabled=bg_disabled, key="blk_geos")
+
+    # 3. File
+    b_file = st.file_uploader("3. Upload CSV", type=["csv"])
+
+    if st.button("🚀 Run Bulk Scan"):
+        if b_file and b_active_data:
+            df = pd.read_csv(b_file)
+            d_col = next((c for c in df.columns if 'domain' in c.lower()), None)
+            
+            if d_col:
+                domains = df[d_col].dropna().unique().tolist()
+                geos = [g.strip().upper() for g in b_geos.split(",") if g.strip()]
+                
+                res_list = []
+                bar = st.progress(0)
+                txt = st.empty()
+                tot = len(domains) * len(geos)
+                n = 0
+                
+                for d in domains:
+                    for g in geos:
+                        txt.text(f"Scanning {d} in {g}...")
+                        f_url = get_final_url(b_active_data['url'], b_active_data['type'], g)
+                        r, note, h = check_browser_stealth(d, f_url, timeout, headless)
+                        
+                        rec = {"Domain": d, "GEO": g, "Status": r, "Note": note, "Proxy Used": b_sel}
+                        res_list.append(rec)
+                        n += 1
+                        bar.progress(n/tot)
+                
+                txt.success("Done!")
+                
+                # Save to History
+                save_to_history(res_list)
+                
+                # Display
+                rdf = pd.DataFrame(res_list)
+                try:
+                    piv = rdf.pivot(index="Domain", columns="GEO", values="Status")
+                    st.dataframe(piv.style.map(color_status))
+                except: pass
+                st.download_button("Download CSV", rdf.to_csv(index=False).encode('utf-8'), "report.csv")
+        else:
+            st.error("Setup incomplete.")
+
+# === TAB 3: PROXY MANAGER (SAME AS v8) ===
 with tab_manage:
     c1, c2 = st.columns([1, 2])
-    
     with c1:
         st.subheader("Saved Proxies")
         raw_keys = sorted(list(st.session_state.proxies.keys()))
         options_list = ["➕ Create New"] + raw_keys
-        
         sel_opt = st.radio("Select Proxy:", options_list, 
                            format_func=lambda x: x if x == "➕ Create New" else format_proxy_label(x, st.session_state.proxies[x]))
 
@@ -203,123 +384,29 @@ with tab_manage:
         p_type = st.radio("Category", ["rotating", "static"], index=0 if val_type == 'rotating' else 1, horizontal=True, disabled=is_secret)
 
         if p_type == "rotating":
-            st.info("ℹ️ **Rotating**: Used for scanning multiple countries. Must include `{geo}`.")
+            st.info("ℹ️ Must include `{geo}`.")
             new_url = st.text_input("Template URL", value=val_url, placeholder="http://user-{geo}:pass@gate.io:port", disabled=is_secret)
             new_geo = "Multi"
         else:
-            st.info("ℹ️ **Static**: Fixed IP address.")
-            new_url = st.text_input("Proxy URL", value=val_url, placeholder="http://user:pass@1.2.3.4:8080", disabled=is_secret)
-            new_geo = st.text_input("Assigned GEO Code", value=val_geo, placeholder="e.g. US", max_chars=2, disabled=is_secret).upper()
+            st.info("ℹ️ Fixed IP.")
+            new_url = st.text_input("Proxy URL", value=val_url, placeholder="http://ip:port", disabled=is_secret)
+            new_geo = st.text_input("Assigned GEO Code", value=val_geo, max_chars=2, disabled=is_secret).upper()
 
         new_desc = st.text_input("Notes", value=val_desc)
         st.divider()
         col_s, col_d = st.columns([1, 1])
-        
         with col_s:
             if st.button("💾 Save Proxy", type="primary", disabled=is_secret):
-                if not new_name or not new_url: st.error("Required fields missing")
-                elif p_type == "static" and not new_geo: st.error("Static Proxy needs GEO code")
+                if not new_name or not new_url: st.error("Missing fields")
+                elif p_type == "static" and not new_geo: st.error("Missing GEO")
                 else:
                     if not is_new and new_name != val_name: delete_proxy_local(val_name)
                     save_proxy_local(new_name, {"url": new_url, "type": p_type, "geo": new_geo, "desc": new_desc})
-                    refresh()
+                    refresh_proxies()
                     st.success("Saved!")
-                    time.sleep(0.5)
-                    st.rerun()
-
+                    time.sleep(0.5); st.rerun()
         with col_d:
-            if not is_new and not is_secret and st.button("🗑 Delete Proxy", type="secondary"):
-                delete_proxy_local(val_name)
-                refresh()
-                st.rerun()
+            if not is_new and not is_secret and st.button("🗑 Delete", type="secondary"):
+                delete_proxy_local(val_name); refresh_proxies(); st.rerun()
 
-# === 2. MANUAL CHECK ===
-with tab_manual:
-    c1, c2, c3 = st.columns([3, 1, 2])
-    dom = c1.text_input("Domain", "stake.com")
-    geo = c2.text_input("Check GEO", "US").upper()
-    
-    proxies = st.session_state.proxies
-    p_keys = sorted(list(proxies.keys()))
-    p_sel = c3.selectbox("Select Proxy", [""] + p_keys, 
-                         format_func=lambda x: "" if x == "" else format_proxy_label(x, proxies[x]))
-    
-    if st.button("Check One", type="primary"):
-        if p_sel:
-            p_data = proxies[p_sel]
-            if p_data['type'] == 'static' and p_data['geo'] != geo:
-                st.warning(f"⚠️ Mismatch: Proxy is {p_data['geo']}, checking {geo}.")
-            
-            with st.status(f"Checking via {format_proxy_label(p_sel, p_data)}..."):
-                res, note, html = check_browser_stealth(dom, get_final_url(p_data, geo), timeout, headless)
-                if res == "OK": st.success(f"{res}: {note}")
-                elif res == "RESTRICTED": st.error(f"{res}: {note}")
-                else: st.warning(f"{res}: {note}")
-                with st.expander("Source"): st.code(html[:1000])
-
-# === 3. BULK SCAN (IMPROVED) ===
-with tab_bulk:
-    # 1. Сначала выбираем прокси, так как от него зависит поле GEO
-    p_keys_bulk = sorted(list(st.session_state.proxies.keys()))
-    b_sel = st.selectbox("1. Select Proxy Strategy", [""] + p_keys_bulk, 
-                         format_func=lambda x: "Select a Proxy..." if x == "" else format_proxy_label(x, st.session_state.proxies[x]),
-                         key="bulk_p")
-    
-    # Логика блокировки поля GEO
-    geo_disabled = False
-    geo_value = "US, DE, CA" # Значение по умолчанию
-    geo_placeholder = "Enter codes: US, DE, FR..."
-    proxy_info_msg = ""
-
-    if b_sel:
-        p_data = st.session_state.proxies[b_sel]
-        if p_data.get('type') == 'static':
-            geo_disabled = True
-            geo_value = p_data.get('geo', '??')
-            proxy_info_msg = f"🔒 **Static Proxy selected.** GEO locked to **{geo_value}**."
-        else:
-            geo_disabled = False
-            proxy_info_msg = "✅ **Rotating Proxy.** You can specify multiple target countries."
-
-    # 2. Поле GEO (зависимое)
-    if proxy_info_msg:
-        st.info(proxy_info_msg)
-        
-    b_geos = st.text_input("2. Target GEOs", value=geo_value, disabled=geo_disabled, placeholder=geo_placeholder)
-    
-    # 3. Файл
-    b_file = st.file_uploader("3. Upload CSV (Column 'Domain')", type=["csv"])
-
-    if st.button("🚀 Run Bulk Scan"):
-        if b_file and b_sel:
-            df = pd.read_csv(b_file)
-            d_col = next((c for c in df.columns if 'domain' in c.lower()), None)
-            if d_col:
-                domains = df[d_col].dropna().unique().tolist()
-                geos = [g.strip().upper() for g in b_geos.split(",") if g.strip()]
-                p_data = st.session_state.proxies[b_sel]
-
-                res_list = []
-                bar = st.progress(0)
-                txt = st.empty()
-                tot = len(domains) * len(geos)
-                n = 0
-                
-                for d in domains:
-                    for g in geos:
-                        txt.text(f"Scanning {d} in {g}...")
-                        f_url = get_final_url(p_data, g)
-                        r, note, h = check_browser_stealth(d, f_url, timeout, headless)
-                        res_list.append({"Domain": d, "GEO": g, "Status": r, "Note": note})
-                        n += 1
-                        bar.progress(n/tot)
-                
-                txt.success("Done!")
-                rdf = pd.DataFrame(res_list)
-                try:
-                    piv = rdf.pivot(index="Domain", columns="GEO", values="Status")
-                    st.dataframe(piv.style.map(color_status))
-                except: pass
-                st.download_button("Download CSV", rdf.to_csv(index=False).encode('utf-8'), "report.csv")
-        else:
-            st.error("Please select a proxy and upload a file.")
+# === TAB 4
