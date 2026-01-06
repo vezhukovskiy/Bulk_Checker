@@ -219,7 +219,7 @@ with st.sidebar:
     
     st.info("ℹ️ **Note:** In Streamlit Cloud, browser runs invisibly (Headless).")
 
-st.title("🌍 Casino/Affiliate Geo Scanner")
+st.title("🌍 Bulk Checker")
 
 tab_manual, tab_bulk, tab_proxies = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan (CSV)", "🔑 Proxy Manager"])
 
@@ -250,8 +250,8 @@ with tab_proxies:
 # === TAB: MANUAL ===
 with tab_manual:
     col1, col2, col3 = st.columns([3, 1, 2])
-    m_domain = col1.text_input("Domain", "stake.com")
-    m_geo = col2.text_input("GEO", "US")
+    m_domain = col1.text_input("Domain")
+    m_geo = col2.text_input("GEO")
     
     proxy_options = [""] + list(st.session_state.proxies.keys())
     m_proxy_name = col3.selectbox("Select Proxy", proxy_options, key="man_px")
