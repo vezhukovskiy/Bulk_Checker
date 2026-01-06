@@ -5,15 +5,52 @@ import os
 import time
 import random
 import re
+import subprocess
+import sys
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
 from typing import Optional, Tuple
 
-# --- Playwright ---
-try:
-    from playwright.sync_api import sync_playwright
-except ImportError:
-    sync_playwright = None
+# ==========================================
+# 0. AUTO-INSTALL FIX (CRITICAL FOR CLOUD)
+# ==========================================
+def ensure_playwright_installed():
+    """
+    Проверяет наличие браузера. Если нет - устанавливает его.
+    Это решает ошибку 'Executable doesn't exist'.
+    """
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        st.error("Playwright library not found! Add 'playwright' to requirements.txt")
+        st.stop()
+
+    # Пробуем тестовый запуск
+    try:
+        with sync_playwright() as p:
+            # Пытаемся запустить браузер. Если упадет - значит его нет.
+            browser = p.chromium.launch(headless=True)
+            browser.close()
+    except Exception as e:
+        # Если ошибка связана с Executable, начинаем установку
+        if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
+            warning_box = st.warning("⚙️ First launch detected: Installing Chromium browser... (This takes ~45 seconds)")
+            try:
+                # Магия: запускаем установку изнутри скрипта
+                subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+                warning_box.empty()
+                st.success("✅ Browser installed! Reloading app...")
+                time.sleep(1)
+                st.rerun()
+            except Exception as install_err:
+                st.error(f"Failed to install browser: {install_err}")
+                st.stop()
+
+# Запускаем проверку при старте
+ensure_playwright_installed()
+
+# --- IMPORTS AFTER CHECK ---
+from playwright.sync_api import sync_playwright
 
 # Файлы хранения
 LOCAL_PROXY_FILE = "saved_proxies.json"
@@ -41,16 +78,13 @@ def load_history():
     return []
 
 def save_to_history(new_records):
-    """Save new records and clean up old ones (>7 days)"""
     history = load_history()
-    
-    # 1. Add new
     now_str = datetime.now().isoformat()
     for rec in new_records:
         rec['timestamp'] = now_str
         history.append(rec)
     
-    # 2. Cleanup old (> 7 days)
+    # Clean old records (>7 days)
     cutoff = datetime.now() - timedelta(days=7)
     clean_history = []
     for rec in history:
@@ -124,7 +158,7 @@ def get_final_url(url_template, p_type, target_geo):
     return url_template
 
 # ==========================================
-# 3. CORE ENGINE (CLOUD FIXED)
+# 3. CORE ENGINE
 # ==========================================
 
 def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bool):
@@ -134,7 +168,6 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
         time.sleep(random.uniform(0.5, 1.0))
         return random.choice([("OK", "Simulated OK", ""), ("RESTRICTED", "Simulated Ban", "")])
 
-    if sync_playwright is None: return "ERROR", "Playwright Missing", ""
     if not url.startswith("http"): url = f"https://{url}"
 
     pw_proxy = None
@@ -146,7 +179,6 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
             pw_proxy["password"] = u.password
     except Exception as e: return "ERROR", f"Proxy Parse: {e}", ""
 
-    # Аргументы для запуска (важно для Docker/Cloud)
     args = [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
@@ -158,23 +190,8 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
     with sync_playwright() as p:
         browser = None
         try:
-            # === CLOUD FIX START ===
-            # Проверяем, есть ли системный Chromium (установленный через packages.txt)
-            # В Streamlit Cloud он обычно лежит здесь:
-            sys_executable_path = "/usr/bin/chromium"
-            
-            launch_kwargs = {
-                "headless": headless,
-                "args": args
-            }
-            
-            # Если файл существует (значит мы в Cloud/Linux), указываем путь явно
-            if os.path.exists(sys_executable_path):
-                launch_kwargs["executable_path"] = sys_executable_path
-            
-            # Запускаем браузер с правильными параметрами
-            browser = p.chromium.launch(**launch_kwargs)
-            # === CLOUD FIX END ===
+            # Пытаемся запустить браузер (теперь он точно установлен функцией выше)
+            browser = p.chromium.launch(headless=headless, args=args)
 
             context = browser.new_context(
                 proxy=pw_proxy,
@@ -214,7 +231,7 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 # 4. UI
 # ==========================================
 
-st.set_page_config(page_title="Geo Scanner v10 Cloud", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Geo Scanner v11", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
@@ -230,14 +247,12 @@ def color_status(val):
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
-    # В облаке headless должен быть True по умолчанию
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
-    st.info("ℹ️ If running on Streamlit Cloud, keep Headless=True.")
+    st.caption("v11: Auto-Install Enabled")
 
-st.title("🌍 Affiliate Geo Scanner v10 (Cloud Ready)")
+st.title("🌍 Affiliate Geo Scanner v11 (Auto-Fix)")
 
-# TABS
 tab_manual, tab_bulk, tab_manage, tab_history = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager", "📜 History"])
 
 # === TAB 1: MANUAL CHECK ===
@@ -316,7 +331,7 @@ with tab_bulk:
     if b_active_data and b_active_data['type'] == 'static':
         bg_disabled = True
         bg_val = b_active_data['geo']
-        st.info(f"🔒 Static Proxy selected. Scan restricted to single GEO: **{bg_val}**")
+        st.info(f"🔒 Static Proxy selected. Scan restricted to: **{bg_val}**")
     
     b_geos = st.text_input("2. Target GEOs", value=bg_val, disabled=bg_disabled, key="blk_geos")
     b_file = st.file_uploader("3. Upload CSV", type=["csv"])
