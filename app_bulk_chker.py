@@ -154,7 +154,7 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 # 3. UI
 # ==========================================
 
-st.set_page_config(page_title="Bulk Checker", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Geo Scanner v7", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
@@ -173,41 +173,40 @@ with st.sidebar:
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
 
-st.title("🌍 Bulk Checker")
+st.title("🌍 Affiliate Geo Scanner v7")
 
 tab_manual, tab_bulk, tab_manage = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager"])
 
-# === 1. PROXY MANAGER (FIXED) ===
+# === 1. PROXY MANAGER (RENAME FIX) ===
 with tab_manage:
     c1, c2 = st.columns([1, 2])
     
     with c1:
         st.subheader("Saved Proxies")
-        p_keys = list(st.session_state.proxies.keys())
-        # Используем session_state для отслеживания выбора
-        if "selected_proxy_idx" not in st.session_state:
-            st.session_state.selected_proxy_idx = 0
-            
-        options_list = ["➕ Create New"] + p_keys
+        # Сортируем ключи, чтобы было красиво (Create New всегда первый)
+        raw_keys = list(st.session_state.proxies.keys())
+        raw_keys.sort()
+        options_list = ["➕ Create New"] + raw_keys
         
+        # sel_opt - это то, что выбрано сейчас (СТАРОЕ ИМЯ)
         sel_opt = st.radio("Select Proxy:", options_list, 
                            format_func=lambda x: x if x == "➕ Create New" else format_proxy_label(x, st.session_state.proxies[x]))
 
     with c2:
         st.subheader("Proxy Editor")
         
-        # Загрузка данных в переменные
+        # Загрузка данных
         if sel_opt == "➕ Create New":
             val_name = ""
             val_url = ""
-            val_type = "rotating" # default
+            val_type = "rotating"
             val_geo = ""
             val_desc = ""
             is_new = True
             is_secret = False
         else:
             d = st.session_state.proxies[sel_opt]
-            val_name = sel_opt
+            val_name = sel_opt # Исходное имя до редактирования
             val_url = d['url']
             val_type = d.get('type', 'rotating')
             val_geo = d.get('geo', '')
@@ -215,14 +214,14 @@ with tab_manage:
             is_new = False
             is_secret = "Secrets" in val_desc
 
-        # --- ИНТЕРАКТИВНЫЕ ПОЛЯ (БЕЗ ФОРМЫ) ---
+        # --- ИНТЕРФЕЙС ---
         
+        # new_name - это то, что ты печатаешь (НОВОЕ ИМЯ)
         new_name = st.text_input("Name (Alias)", value=val_name, 
                                  placeholder="e.g. SmartProxy Residential",
                                  disabled=is_secret,
-                                 help="A unique name for this proxy configuration.")
+                                 help="Unique name. If you change this, the proxy will be renamed.")
 
-        # Тип прокси - переключатель меняет интерфейс сразу
         p_type = st.radio("Category", ["rotating", "static"], 
                           index=0 if val_type == 'rotating' else 1,
                           horizontal=True,
@@ -232,28 +231,19 @@ with tab_manage:
             st.info("ℹ️ **Rotating**: Used for scanning multiple countries. Must include `{geo}`.")
             new_url = st.text_input("Template URL", value=val_url, 
                                     placeholder="http://user-{geo}:pass@gate.io:port",
-                                    disabled=is_secret,
-                                    help="Enter the connection string. Make sure to replace the country code with {geo}.")
+                                    disabled=is_secret)
             new_geo = "Multi"
         else:
             st.info("ℹ️ **Static**: Fixed IP address. You must specify its location.")
             new_url = st.text_input("Proxy URL", value=val_url, 
                                     placeholder="http://user:pass@1.2.3.4:8080",
-                                    disabled=is_secret,
-                                    help="Enter the direct connection string for your static proxy.")
+                                    disabled=is_secret)
             new_geo = st.text_input("Assigned GEO Code", value=val_geo, 
-                                    placeholder="e.g. US",
-                                    max_chars=2,
-                                    disabled=is_secret,
-                                    help="Two-letter country code (US, DE, FR) of this proxy IP.").upper()
+                                    placeholder="e.g. US", max_chars=2, disabled=is_secret).upper()
 
-        new_desc = st.text_input("Notes", value=val_desc, 
-                                 placeholder="e.g. Supports Europe only",
-                                 help="Optional notes for yourself.")
+        new_desc = st.text_input("Notes", value=val_desc, placeholder="e.g. Supports Europe only")
 
         st.divider()
-        
-        # Кнопки действия
         col_s, col_d = st.columns([1, 1])
         
         with col_s:
@@ -263,6 +253,12 @@ with tab_manage:
                 elif p_type == "static" and not new_geo:
                     st.error("Static proxies must have a GEO code!")
                 else:
+                    # --- ЛОГИКА СОХРАНЕНИЯ (ПЕРЕИМЕНОВАНИЕ) ---
+                    # 1. Если это не новый прокси И имя изменилось -> удаляем старый
+                    if not is_new and new_name != val_name:
+                        delete_proxy_local(val_name) # Удаляем старую запись "DECODO"
+                    
+                    # 2. Сохраняем новую запись "DECODO - Static"
                     save_data = {
                         "url": new_url,
                         "type": p_type,
@@ -270,8 +266,9 @@ with tab_manage:
                         "desc": new_desc
                     }
                     save_proxy_local(new_name, save_data)
+                    
                     refresh()
-                    st.success(f"Saved '{new_name}' successfully!")
+                    st.success(f"Saved '{new_name}'!")
                     time.sleep(1)
                     st.rerun()
 
@@ -289,12 +286,14 @@ with tab_manage:
 # === 2. MANUAL CHECK ===
 with tab_manual:
     c1, c2, c3 = st.columns([3, 1, 2])
-    dom = c1.text_input("Domain")
-    geo = c2.text_input("Check GEO").upper()
+    dom = c1.text_input("Domain", "stake.com")
+    geo = c2.text_input("Check GEO", "US").upper()
     
     proxies = st.session_state.proxies
-    p_opts = list(proxies.keys())
-    p_sel = c3.selectbox("Select Proxy", [""] + p_opts, 
+    # Сортировка для красоты
+    p_keys = sorted(list(proxies.keys()))
+    
+    p_sel = c3.selectbox("Select Proxy", [""] + p_keys, 
                          format_func=lambda x: "" if x == "" else format_proxy_label(x, proxies[x]))
     
     if st.button("Check One", type="primary"):
@@ -322,19 +321,21 @@ with tab_manual:
 with tab_bulk:
     b_file = st.file_uploader("CSV (Column 'Domain')", type=["csv"])
     b_geos = st.text_input("Target GEOs", "US, DE, CA")
-    b_sel = st.selectbox("Proxy Strategy", [""] + p_opts, 
-                         format_func=lambda x: "" if x == "" else format_proxy_label(x, proxies[x]),
+    
+    # Тоже сортируем список
+    p_keys_bulk = sorted(list(st.session_state.proxies.keys()))
+    b_sel = st.selectbox("Proxy Strategy", [""] + p_keys_bulk, 
+                         format_func=lambda x: "" if x == "" else format_proxy_label(x, st.session_state.proxies[x]),
                          key="bulk_p")
     
     if st.button("🚀 Run Bulk Scan"):
         if b_file and b_sel:
             df = pd.read_csv(b_file)
             d_col = next((c for c in df.columns if 'domain' in c.lower()), None)
-            
             if d_col:
                 domains = df[d_col].dropna().unique().tolist()
                 geos = [g.strip().upper() for g in b_geos.split(",") if g.strip()]
-                p_data = proxies[b_sel]
+                p_data = st.session_state.proxies[b_sel]
                 
                 if p_data['type'] == 'static':
                     st.warning(f"⚠️ You selected a STATIC proxy **({p_data['geo']})**. Checks for other countries will be inaccurate!")
