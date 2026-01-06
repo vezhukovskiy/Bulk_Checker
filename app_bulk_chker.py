@@ -154,7 +154,7 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 # 3. UI
 # ==========================================
 
-st.set_page_config(page_title="Geo Scanner v6", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Bulk Checker", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
@@ -173,7 +173,7 @@ with st.sidebar:
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
 
-st.title("🌍 Affiliate Geo Scanner v6")
+st.title("🌍 Bulk Checker")
 
 tab_manual, tab_bulk, tab_manage = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager"])
 
@@ -289,8 +289,8 @@ with tab_manage:
 # === 2. MANUAL CHECK ===
 with tab_manual:
     c1, c2, c3 = st.columns([3, 1, 2])
-    dom = c1.text_input("Domain", "stake.com")
-    geo = c2.text_input("Check GEO", "US").upper()
+    dom = c1.text_input("Domain")
+    geo = c2.text_input("Check GEO").upper()
     
     proxies = st.session_state.proxies
     p_opts = list(proxies.keys())
