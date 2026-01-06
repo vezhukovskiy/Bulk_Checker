@@ -28,7 +28,7 @@ RESTRICT_PATTERNS = [
 ]
 
 # ==========================================
-# 1. HISTORY MANAGER (NEW)
+# 1. HISTORY MANAGER
 # ==========================================
 
 def load_history():
@@ -45,7 +45,6 @@ def save_to_history(new_records):
     history = load_history()
     
     # 1. Add new
-    # Add timestamp string
     now_str = datetime.now().isoformat()
     for rec in new_records:
         rec['timestamp'] = now_str
@@ -59,7 +58,7 @@ def save_to_history(new_records):
             rec_dt = datetime.fromisoformat(rec['timestamp'])
             if rec_dt > cutoff:
                 clean_history.append(rec)
-        except: pass # Если формат битый, удаляем
+        except: pass 
             
     with open(HISTORY_FILE, 'w') as f:
         json.dump(clean_history, f, indent=4)
@@ -125,7 +124,7 @@ def get_final_url(url_template, p_type, target_geo):
     return url_template
 
 # ==========================================
-# 3. CORE ENGINE
+# 3. CORE ENGINE (CLOUD FIXED)
 # ==========================================
 
 def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bool):
@@ -147,12 +146,36 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
             pw_proxy["password"] = u.password
     except Exception as e: return "ERROR", f"Proxy Parse: {e}", ""
 
-    args = ["--disable-blink-features=AutomationControlled", "--no-sandbox", "--disable-infobars"]
+    # Аргументы для запуска (важно для Docker/Cloud)
+    args = [
+        "--disable-blink-features=AutomationControlled",
+        "--no-sandbox",
+        "--disable-infobars",
+        "--disable-dev-shm-usage",
+        "--disable-gpu"
+    ]
     
     with sync_playwright() as p:
         browser = None
         try:
-            browser = p.chromium.launch(headless=headless, args=args)
+            # === CLOUD FIX START ===
+            # Проверяем, есть ли системный Chromium (установленный через packages.txt)
+            # В Streamlit Cloud он обычно лежит здесь:
+            sys_executable_path = "/usr/bin/chromium"
+            
+            launch_kwargs = {
+                "headless": headless,
+                "args": args
+            }
+            
+            # Если файл существует (значит мы в Cloud/Linux), указываем путь явно
+            if os.path.exists(sys_executable_path):
+                launch_kwargs["executable_path"] = sys_executable_path
+            
+            # Запускаем браузер с правильными параметрами
+            browser = p.chromium.launch(**launch_kwargs)
+            # === CLOUD FIX END ===
+
             context = browser.new_context(
                 proxy=pw_proxy,
                 viewport={"width": 1280, "height": 720},
@@ -169,7 +192,6 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
             try: page.mouse.move(random.randint(100,500), random.randint(100,500))
             except: pass
             
-            # Wait for content or Cloudflare
             try: page.wait_for_selector("text=Just a moment", state="detached", timeout=6000)
             except: pass
             
@@ -192,7 +214,7 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 # 4. UI
 # ==========================================
 
-st.set_page_config(page_title="Geo Scanner v9 Ultimate", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Geo Scanner v10 Cloud", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
@@ -208,10 +230,12 @@ def color_status(val):
 # Sidebar
 with st.sidebar:
     st.header("⚙️ Settings")
+    # В облаке headless должен быть True по умолчанию
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
+    st.info("ℹ️ If running on Streamlit Cloud, keep Headless=True.")
 
-st.title("🌍 Affiliate Geo Scanner v9")
+st.title("🌍 Affiliate Geo Scanner v10 (Cloud Ready)")
 
 # TABS
 tab_manual, tab_bulk, tab_manage, tab_history = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager", "📜 History"])
@@ -221,19 +245,14 @@ with tab_manual:
     c1, c2, c3 = st.columns([3, 1, 2])
     dom = c1.text_input("Domain", "stake.com")
     
-    # 1. Выбор источника прокси
     proxies = st.session_state.proxies
     p_keys = sorted(list(proxies.keys()))
-    
-    # Добавляем опцию "Custom"
     select_options = [""] + p_keys + ["⚡ Custom (One-time)"]
     
     p_sel = c3.selectbox("Select Proxy", select_options, 
                          format_func=lambda x: "⚡ Custom (One-time)" if x == "⚡ Custom (One-time)" else (format_proxy_label(x, proxies[x]) if x in proxies else ""))
     
-    # Логика определения прокси (Saved или Custom)
     active_proxy_data = None
-    
     if p_sel == "⚡ Custom (One-time)":
         with c3.expander("Configure Custom Proxy", expanded=True):
             cust_type = st.radio("Type", ["rotating", "static"], horizontal=True, key="man_cust_type")
@@ -241,42 +260,31 @@ with tab_manual:
             cust_geo = ""
             if cust_type == "static":
                 cust_geo = st.text_input("Fixed GEO", placeholder="US", max_chars=2, key="man_cust_geo").upper()
-            
             if cust_url:
                 active_proxy_data = {"url": cust_url, "type": cust_type, "geo": cust_geo}
-    
     elif p_sel and p_sel in proxies:
         active_proxy_data = proxies[p_sel]
 
-    # 2. Поле ГЕО (Умное поведение)
     geo_val = "US"
     geo_disabled = False
-    
     if active_proxy_data and active_proxy_data['type'] == 'static':
         geo_val = active_proxy_data['geo']
-        geo_disabled = True # Блокируем, так как прокси статична
+        geo_disabled = True
         c2.info(f"🔒 Locked to {geo_val}")
     
     check_geo = c2.text_input("Check GEO", value=geo_val, disabled=geo_disabled, key="man_geo").upper()
 
-    # 3. Кнопка
     if st.button("Check One", type="primary"):
         if active_proxy_data:
             final_url = get_final_url(active_proxy_data['url'], active_proxy_data['type'], check_geo)
-            
             with st.status(f"Checking via {p_sel if p_sel != '⚡ Custom (One-time)' else 'Custom Proxy'}..."):
                 res, note, html = check_browser_stealth(dom, final_url, timeout, headless)
                 
-                # Результат
                 if res == "OK": st.success(f"{res}: {note}")
                 elif res == "RESTRICTED": st.error(f"{res}: {note}")
                 else: st.warning(f"{res}: {note}")
                 
-                # Сохраняем в историю
-                rec = {
-                    "Domain": dom, "GEO": check_geo, "Status": res, 
-                    "Note": note, "Proxy Used": p_sel
-                }
+                rec = {"Domain": dom, "GEO": check_geo, "Status": res, "Note": note, "Proxy Used": p_sel}
                 save_to_history([rec])
                 
                 with st.expander("Source"): st.code(html[:1000])
@@ -285,13 +293,11 @@ with tab_manual:
 
 # === TAB 2: BULK SCAN ===
 with tab_bulk:
-    # 1. Proxy Selection
     b_opts = [""] + p_keys + ["⚡ Custom (One-time)"]
     b_sel = st.selectbox("1. Select Proxy Strategy", b_opts, 
                          format_func=lambda x: "⚡ Custom (One-time)" if x == "⚡ Custom (One-time)" else (format_proxy_label(x, proxies[x]) if x in proxies else "Select..."),
                          key="bulk_p")
 
-    # Logic for Bulk Active Proxy
     b_active_data = None
     if b_sel == "⚡ Custom (One-time)":
         with st.expander("Configure Custom Bulk Proxy", expanded=True):
@@ -305,29 +311,23 @@ with tab_bulk:
     elif b_sel and b_sel in proxies:
         b_active_data = proxies[b_sel]
 
-    # 2. Geo Fields Logic
     bg_disabled = False
     bg_val = "US, DE, CA"
-    
     if b_active_data and b_active_data['type'] == 'static':
         bg_disabled = True
         bg_val = b_active_data['geo']
         st.info(f"🔒 Static Proxy selected. Scan restricted to single GEO: **{bg_val}**")
     
     b_geos = st.text_input("2. Target GEOs", value=bg_val, disabled=bg_disabled, key="blk_geos")
-
-    # 3. File
     b_file = st.file_uploader("3. Upload CSV", type=["csv"])
 
     if st.button("🚀 Run Bulk Scan"):
         if b_file and b_active_data:
             df = pd.read_csv(b_file)
             d_col = next((c for c in df.columns if 'domain' in c.lower()), None)
-            
             if d_col:
                 domains = df[d_col].dropna().unique().tolist()
                 geos = [g.strip().upper() for g in b_geos.split(",") if g.strip()]
-                
                 res_list = []
                 bar = st.progress(0)
                 txt = st.empty()
@@ -339,18 +339,13 @@ with tab_bulk:
                         txt.text(f"Scanning {d} in {g}...")
                         f_url = get_final_url(b_active_data['url'], b_active_data['type'], g)
                         r, note, h = check_browser_stealth(d, f_url, timeout, headless)
-                        
                         rec = {"Domain": d, "GEO": g, "Status": r, "Note": note, "Proxy Used": b_sel}
                         res_list.append(rec)
                         n += 1
                         bar.progress(n/tot)
                 
                 txt.success("Done!")
-                
-                # Save to History
                 save_to_history(res_list)
-                
-                # Display
                 rdf = pd.DataFrame(res_list)
                 try:
                     piv = rdf.pivot(index="Domain", columns="GEO", values="Status")
@@ -360,7 +355,7 @@ with tab_bulk:
         else:
             st.error("Setup incomplete.")
 
-# === TAB 3: PROXY MANAGER (SAME AS v8) ===
+# === TAB 3: PROXY MANAGER ===
 with tab_manage:
     c1, c2 = st.columns([1, 2])
     with c1:
@@ -409,4 +404,23 @@ with tab_manage:
             if not is_new and not is_secret and st.button("🗑 Delete", type="secondary"):
                 delete_proxy_local(val_name); refresh_proxies(); st.rerun()
 
-# === TAB 4
+# === TAB 4: HISTORY ===
+with tab_history:
+    st.header("📜 Scan History (Last 7 Days)")
+    hist_data = load_history()
+    if hist_data:
+        df_hist = pd.DataFrame(hist_data)
+        df_hist = df_hist.sort_values(by="timestamp", ascending=False)
+        
+        c_f1, c_f2 = st.columns(2)
+        f_dom = c_f1.text_input("Filter by Domain")
+        f_stat = c_f2.multiselect("Filter by Status", df_hist['Status'].unique())
+        
+        if f_dom: df_hist = df_hist[df_hist['Domain'].str.contains(f_dom, case=False, na=False)]
+        if f_stat: df_hist = df_hist[df_hist['Status'].isin(f_stat)]
+            
+        st.dataframe(df_hist.style.map(color_status, subset=['Status']), use_container_width=True)
+        csv_h = df_hist.to_csv(index=False).encode('utf-8')
+        st.download_button("Download History CSV", csv_h, "full_history.csv")
+    else:
+        st.info("History is empty.")
