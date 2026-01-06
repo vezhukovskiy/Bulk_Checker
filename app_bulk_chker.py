@@ -12,12 +12,11 @@ from urllib.parse import urlparse
 from typing import Optional, Tuple
 
 # ==========================================
-# 0. AUTO-INSTALL FIX (CRITICAL FOR CLOUD)
+# 0. AUTO-INSTALL FIX (SYSTEM LEVEL)
 # ==========================================
 def ensure_playwright_installed():
     """
-    Проверяет наличие браузера. Если нет - устанавливает его.
-    Это решает ошибку 'Executable doesn't exist'.
+    Автоматическая проверка и установка браузера при старте.
     """
     try:
         from playwright.sync_api import sync_playwright
@@ -28,28 +27,32 @@ def ensure_playwright_installed():
     # Пробуем тестовый запуск
     try:
         with sync_playwright() as p:
-            # Пытаемся запустить браузер. Если упадет - значит его нет.
+            # Пытаемся запустить, чтобы проверить, есть ли бинарник
             browser = p.chromium.launch(headless=True)
             browser.close()
     except Exception as e:
-        # Если ошибка связана с Executable, начинаем установку
+        # Если ошибка указывает на отсутствие браузера
         if "Executable doesn't exist" in str(e) or "playwright install" in str(e):
-            warning_box = st.warning("⚙️ First launch detected: Installing Chromium browser... (This takes ~45 seconds)")
+            placeholder = st.empty()
+            placeholder.warning("⚙️ First launch detected: Installing Chromium browser... (Please wait ~60 seconds)")
+            
             try:
-                # Магия: запускаем установку изнутри скрипта
+                # 1. Install Chromium
                 subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
-                warning_box.empty()
-                st.success("✅ Browser installed! Reloading app...")
-                time.sleep(1)
+                
+                # 2. Install Deps (иногда нужно в чистом линуксе)
+                # subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True) 
+                
+                placeholder.success("✅ Browser installed! Reloading app...")
+                time.sleep(2)
                 st.rerun()
             except Exception as install_err:
-                st.error(f"Failed to install browser: {install_err}")
+                placeholder.error(f"Failed to install browser: {install_err}")
                 st.stop()
 
-# Запускаем проверку при старте
+# Запуск проверки при старте скрипта
 ensure_playwright_installed()
 
-# --- IMPORTS AFTER CHECK ---
 from playwright.sync_api import sync_playwright
 
 # Файлы хранения
@@ -84,7 +87,6 @@ def save_to_history(new_records):
         rec['timestamp'] = now_str
         history.append(rec)
     
-    # Clean old records (>7 days)
     cutoff = datetime.now() - timedelta(days=7)
     clean_history = []
     for rec in history:
@@ -103,7 +105,6 @@ def save_to_history(new_records):
 
 def load_proxies():
     proxies = {}
-    # Secrets
     if "proxies" in st.secrets:
         for name, url in st.secrets["proxies"].items():
             p_type = "rotating" if "{geo}" in url else "static"
@@ -112,7 +113,6 @@ def load_proxies():
                 "geo": "Unknown" if p_type == "static" else "Multi",
                 "desc": "🔒 From Secrets"
             }
-    # Local
     if os.path.exists(LOCAL_PROXY_FILE):
         try:
             with open(LOCAL_PROXY_FILE, 'r') as f:
@@ -179,18 +179,21 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
             pw_proxy["password"] = u.password
     except Exception as e: return "ERROR", f"Proxy Parse: {e}", ""
 
+    # Args optimized for Docker/Cloud environments
     args = [
         "--disable-blink-features=AutomationControlled",
         "--no-sandbox",
         "--disable-infobars",
         "--disable-dev-shm-usage",
-        "--disable-gpu"
+        "--disable-gpu",
+        "--disable-setuid-sandbox"
     ]
     
     with sync_playwright() as p:
         browser = None
         try:
-            # Пытаемся запустить браузер (теперь он точно установлен функцией выше)
+            # Запускаем Chromium. 
+            # args нужны чтобы не крашилось в контейнерах с малой памятью
             browser = p.chromium.launch(headless=headless, args=args)
 
             context = browser.new_context(
@@ -198,17 +201,21 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
                 viewport={"width": 1280, "height": 720},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
             )
+            # Anti-detect script
             context.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+            
             page = context.new_page()
             
             try:
                 page.goto(url, wait_until="domcontentloaded", timeout=timeout_s * 1000)
             except Exception as e:
-                return "PROXY_FAIL", f"Conn Error: {str(e)[:50]}", ""
+                return "PROXY_FAIL", f"Conn Error: {str(e)[:100]}", ""
 
+            # Human-like mouse move
             try: page.mouse.move(random.randint(100,500), random.randint(100,500))
             except: pass
             
+            # Wait for potential Cloudflare challenge
             try: page.wait_for_selector("text=Just a moment", state="detached", timeout=6000)
             except: pass
             
@@ -231,7 +238,7 @@ def check_browser_stealth(url: str, proxy_url: str, timeout_s: int, headless: bo
 # 4. UI
 # ==========================================
 
-st.set_page_config(page_title="Geo Scanner v11", layout="wide", page_icon="🌍")
+st.set_page_config(page_title="Geo Scanner v12", layout="wide", page_icon="🌍")
 
 if 'proxies' not in st.session_state:
     st.session_state.proxies = load_proxies()
@@ -249,9 +256,9 @@ with st.sidebar:
     st.header("⚙️ Settings")
     headless = st.checkbox("Headless Mode", value=True)
     timeout = st.number_input("Timeout", value=30)
-    st.caption("v11: Auto-Install Enabled")
+    st.caption("v12: Clean & Robust")
 
-st.title("🌍 Affiliate Geo Scanner v11 (Auto-Fix)")
+st.title("🌍 Affiliate Geo Scanner v12")
 
 tab_manual, tab_bulk, tab_manage, tab_history = st.tabs(["🤚 Manual Check", "🚀 Bulk Scan", "🛠 Proxy Manager", "📜 History"])
 
@@ -364,7 +371,8 @@ with tab_bulk:
                 rdf = pd.DataFrame(res_list)
                 try:
                     piv = rdf.pivot(index="Domain", columns="GEO", values="Status")
-                    st.dataframe(piv.style.map(color_status))
+                    # Исправление Deprecation Warning
+                    st.dataframe(piv.style.map(color_status), use_container_width=True)
                 except: pass
                 st.download_button("Download CSV", rdf.to_csv(index=False).encode('utf-8'), "report.csv")
         else:
@@ -434,6 +442,7 @@ with tab_history:
         if f_dom: df_hist = df_hist[df_hist['Domain'].str.contains(f_dom, case=False, na=False)]
         if f_stat: df_hist = df_hist[df_hist['Status'].isin(f_stat)]
             
+        # Исправление Deprecation Warning
         st.dataframe(df_hist.style.map(color_status, subset=['Status']), use_container_width=True)
         csv_h = df_hist.to_csv(index=False).encode('utf-8')
         st.download_button("Download History CSV", csv_h, "full_history.csv")
