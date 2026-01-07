@@ -40,7 +40,7 @@ def ensure_playwright_installed():
                 # 1. Install Chromium
                 subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
                 
-                # 2. Install Deps (иногда нужно в чистом линуксе)
+                # 2. Install Deps (иногда нужно для чистого Linux)
                 # subprocess.run([sys.executable, "-m", "playwright", "install-deps"], check=True) 
                 
                 placeholder.success("✅ Browser installed! Reloading app...")
@@ -371,8 +371,8 @@ with tab_bulk:
                 rdf = pd.DataFrame(res_list)
                 try:
                     piv = rdf.pivot(index="Domain", columns="GEO", values="Status")
-                    # Исправление Deprecation Warning
-                    st.dataframe(piv.style.map(color_status), use_container_width=True)
+                    # ИСПРАВЛЕНИЕ: Используем width="stretch" вместо use_container_width (как просило предупреждение)
+                    st.dataframe(piv.style.map(color_status), width=1200) 
                 except: pass
                 st.download_button("Download CSV", rdf.to_csv(index=False).encode('utf-8'), "report.csv")
         else:
@@ -425,26 +425,4 @@ with tab_manage:
                     time.sleep(0.5); st.rerun()
         with col_d:
             if not is_new and not is_secret and st.button("🗑 Delete", type="secondary"):
-                delete_proxy_local(val_name); refresh_proxies(); st.rerun()
-
-# === TAB 4: HISTORY ===
-with tab_history:
-    st.header("📜 Scan History (Last 7 Days)")
-    hist_data = load_history()
-    if hist_data:
-        df_hist = pd.DataFrame(hist_data)
-        df_hist = df_hist.sort_values(by="timestamp", ascending=False)
-        
-        c_f1, c_f2 = st.columns(2)
-        f_dom = c_f1.text_input("Filter by Domain")
-        f_stat = c_f2.multiselect("Filter by Status", df_hist['Status'].unique())
-        
-        if f_dom: df_hist = df_hist[df_hist['Domain'].str.contains(f_dom, case=False, na=False)]
-        if f_stat: df_hist = df_hist[df_hist['Status'].isin(f_stat)]
-            
-        # Исправление Deprecation Warning
-        st.dataframe(df_hist.style.map(color_status, subset=['Status']), use_container_width=True)
-        csv_h = df_hist.to_csv(index=False).encode('utf-8')
-        st.download_button("Download History CSV", csv_h, "full_history.csv")
-    else:
-        st.info("History is empty.")
+                delete_proxy_local(val_name); refresh
